@@ -2,7 +2,7 @@
 
 **Warning! This expert advisor doesn't trade in a fully automatic mode! It only trades based on the time and price parameters that you enter before the trade.**
 
-News Trader is a custom MT4/MT5/cTrader expert advisor coded by EarnForex.com. Its main purpose is to autoamte news trading based on pre-release position opening with TP significantly greater than SL. It can be used to profit from high volatity during economic news announcements.
+News Trader is a custom MT4/MT5/cTrader expert advisor coded by EarnForex.com. Its main purpose is to automate news trading based on pre-release position opening with TP significantly greater than SL. It can be used to profit from high volatility during economic news announcements.
 
 It is best to use it only on zero-spread or fixed-spread trading accounts.
 
