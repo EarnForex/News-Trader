@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright © 2015-2022, EarnForex"
 #property link      "https://www.earnforex.com/metatrader-expert-advisors/News-Trader/"
-#property version   "1.09"
+#property version   "1.10"
 
 #property description "Opens a buy/sell trade (random, chosen direction, or both directions) seconds before news release."
 #property description "Sets SL and TP. Keeps updating them until the very release."
@@ -195,6 +195,14 @@ string TimeDistance(int t)
 //+------------------------------------------------------------------+
 void OnTick()
 {
+    AccountCurrency = AccountInfoString(ACCOUNT_CURRENCY);
+    // A rough patch for cases when account currency is set as RUR instead of RUB.
+    if (AccountCurrency == "RUR") AccountCurrency = "RUB";
+    ProfitCurrency = SymbolInfoString(Symbol(), SYMBOL_CURRENCY_PROFIT);
+    if (ProfitCurrency == "RUR") ProfitCurrency = "RUB";
+    BaseCurrency = SymbolInfoString(Symbol(), SYMBOL_CURRENCY_BASE);
+    if (BaseCurrency == "RUR") BaseCurrency = "RUB";
+
     if ((TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) == false) || (!CanTrade))
     {
         if ((TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) == false) && (Terminal_Trade_Allowed == true))
@@ -550,20 +558,17 @@ void fSell_Pending()
 }
 
 //+------------------------------------------------------------------+
-//| Calculates symbol leverage value based on required margin        |
-//| and current rates.                                               |
+//| Calculates unit cost based on profit calculation mode.           |
 //+------------------------------------------------------------------+
 double CalculateUnitCost()
 {
     double UnitCost;
-    // Futures.
-    if ((CalcMode == SYMBOL_CALC_MODE_FUTURES) || (CalcMode == SYMBOL_CALC_MODE_EXCH_FUTURES) || (CalcMode == SYMBOL_CALC_MODE_EXCH_FUTURES_FORTS))
-        UnitCost = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_VALUE_LOSS) / SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_SIZE);
     // CFD.
-    else if (((CalcMode == SYMBOL_CALC_MODE_CFD) || (CalcMode == SYMBOL_CALC_MODE_CFDINDEX) || (CalcMode == SYMBOL_CALC_MODE_CFDLEVERAGE)))
+    if (((CalcMode == SYMBOL_CALC_MODE_CFD) || (CalcMode == SYMBOL_CALC_MODE_CFDINDEX) || (CalcMode == SYMBOL_CALC_MODE_CFDLEVERAGE)))
         UnitCost = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_SIZE) * SymbolInfoDouble(Symbol(), SYMBOL_TRADE_CONTRACT_SIZE);
     // With Forex and futures instruments, tick value already equals 1 unit cost.
     else UnitCost = SymbolInfoDouble(Symbol(), SYMBOL_TRADE_TICK_VALUE_LOSS);
+    
     return UnitCost;
 }
 
@@ -611,9 +616,11 @@ string GetSymbolByCurrencies(string base_currency, string profit_currency)
 
         // Get its base currency.
         string b_cur = SymbolInfoString(symbolname, SYMBOL_CURRENCY_BASE);
+        if (b_cur == "RUR") b_cur = "RUB";
 
         // Get its profit currency.
         string p_cur = SymbolInfoString(symbolname, SYMBOL_CURRENCY_PROFIT);
+        if (p_cur == "RUR") p_cur = "RUB";
 
         // If the currency pair matches both currencies, select it in Market Watch and return its name.
         if ((b_cur == base_currency) && (p_cur == profit_currency))
@@ -677,8 +684,8 @@ double LotsOptimized(ENUM_ORDER_TYPE dir, double pending_entry = 0)
 
     double UnitCost = CalculateUnitCost();
 
-    // If profit currency is different from account currency and Symbol is not a Forex pair (CFD, futures, and so on).
-    if ((ProfitCurrency != AccountCurrency) && (CalcMode != SYMBOL_CALC_MODE_FOREX) && (CalcMode != SYMBOL_CALC_MODE_FOREX_NO_LEVERAGE))
+    // If profit currency is different from account currency and Symbol is not a Forex pair or futures (CFD, and so on).
+    if ((ProfitCurrency != AccountCurrency) && (CalcMode != SYMBOL_CALC_MODE_FOREX) && (CalcMode != SYMBOL_CALC_MODE_FOREX_NO_LEVERAGE) && (CalcMode != SYMBOL_CALC_MODE_FUTURES) && (CalcMode != SYMBOL_CALC_MODE_EXCH_FUTURES) && (CalcMode != SYMBOL_CALC_MODE_EXCH_FUTURES_FORTS))
     {
         double CCC = CalculateAdjustment(); // Valid only for loss calculation.
         // Adjust the unit cost.

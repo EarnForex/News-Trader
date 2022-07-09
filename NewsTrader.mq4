@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright © 2015-2022, EarnForex"
 #property link      "https://www.earnforex.com/metatrader-expert-advisors/News-Trader/"
-#property version   "1.09"
+#property version   "1.10"
 #property strict
 
 #property description "Opens a buy/sell trade (random, chosen direction, or both directions) seconds before news release."
@@ -76,8 +76,8 @@ bool Terminal_Trade_Allowed = true;
 double SL, TP;
 
 // For tick value adjustment:
-string ProfitCurrency = "", account_currency = "", BaseCurrency = "", ReferenceSymbol = NULL;
-bool ReferenceSymbolMode;
+string ProfitCurrency = "", account_currency = "", BaseCurrency = "", ReferenceSymbol = NULL, AdditionalReferenceSymbol = NULL;
+bool ReferenceSymbolMode, AdditionalReferenceSymbolMode;
 int ProfitCalcMode;
 
 void OnInit()
@@ -450,6 +450,10 @@ double LotsOptimized(int dir)
     BaseCurrency = SymbolInfoString(Symbol(), SYMBOL_CURRENCY_BASE);
     ProfitCalcMode = (int)MarketInfo(Symbol(), MODE_PROFITCALCMODE);
     account_currency = AccountCurrency();
+    // A rough patch for cases when account currency is set as RUR instead of RUB.
+    if (account_currency == "RUR") account_currency = "RUB";
+    if (ProfitCurrency == "RUR") ProfitCurrency = "RUB";
+    if (BaseCurrency == "RUR") BaseCurrency = "RUB";
     double LotStep = MarketInfo(Symbol(), MODE_LOTSTEP);
     int LotStep_digits = CountDecimalPlaces(LotStep);
 
@@ -538,6 +542,7 @@ double LotsOptimized(int dir)
 #define NONFOREX_SYMBOLS_ONLY 1
 double CalculateAdjustment()
 {
+    double add_coefficient = 1; // Might be necessary for correction coefficient calculation if two pairs are used for profit currency to account currency conversion. This is handled differently in MT5 version.
     if (ReferenceSymbol == NULL)
     {
         ReferenceSymbol = GetSymbolByCurrencies(ProfitCurrency, account_currency, FOREX_SYMBOLS_ONLY);
@@ -553,13 +558,34 @@ double CalculateAdjustment()
         }
         if (ReferenceSymbol == NULL)
         {
-            Print("Error. Cannot detect proper currency pair for adjustment calculation. Profit currency: ", ProfitCurrency, ". Account currency: ", account_currency, ".");
-            return 1;
+            // The condition checks whether we are caclulating conversion coefficient for the chart's symbol or for some other.
+            // The error output is OK for the current symbol only because it won't be repeated ad infinitum.
+            // It should be avoided for non-chart symbols because it will just flood the log.
+            Print("Couldn't detect proper currency pair for adjustment calculation. Profit currency: ", ProfitCurrency, ". Account currency: ", account_currency, ". Trying to find a possible two-symbol combination.");
+            if ((FindDoubleReferenceSymbol("USD"))  // USD should work in 99.9% of cases.
+             || (FindDoubleReferenceSymbol("EUR"))  // For very rare cases.
+             || (FindDoubleReferenceSymbol("GBP"))  // For extremely rare cases.
+             || (FindDoubleReferenceSymbol("JPY"))) // For extremely rare cases.
+            {
+                Print("Converting via ", ReferenceSymbol, " and ", AdditionalReferenceSymbol, ".");
+            }
+            else
+            {
+                Print("Adjustment calculation critical failure. Failed both simple and two-pair conversion methods.");
+                return 1;
+            }
         }
+    }
+    if (AdditionalReferenceSymbol != NULL) // If two reference pairs are used.
+    {
+        // Calculate just the additional symbol's coefficient and then use it in final return's multiplication.
+        MqlTick tick;
+        SymbolInfoTick(AdditionalReferenceSymbol, tick);
+        add_coefficient = GetCurrencyCorrectionCoefficient(tick, AdditionalReferenceSymbolMode);
     }
     MqlTick tick;
     SymbolInfoTick(ReferenceSymbol, tick);
-    return GetCurrencyCorrectionCoefficient(tick);
+    return GetCurrencyCorrectionCoefficient(tick, ReferenceSymbolMode) * add_coefficient;
 }
 
 //+---------------------------------------------------------------------------+
@@ -603,15 +629,68 @@ string GetSymbolByCurrencies(const string base_currency, const string profit_cur
     return NULL;
 }
 
+//+----------------------------------------------------------------------------+
+//| Finds reference symbols using 2-pair method.                               |
+//| Results are returned via reference parameters.                             |
+//| Returns true if found the pairs, false otherwise.                          |
+//+----------------------------------------------------------------------------+
+bool FindDoubleReferenceSymbol(const string cross_currency)
+{
+    // A hypothetical example for better understanding:
+    // The trader buys CAD/CHF.
+    // account_currency is known = SEK.
+    // cross_currency = USD.
+    // profit_currency = CHF.
+    // I.e., we have to buy dollars with francs (using the Ask price) and then sell those for SEKs (using the Bid price).
+
+    ReferenceSymbol = GetSymbolByCurrencies(cross_currency, account_currency, FOREX_SYMBOLS_ONLY); 
+    if (ReferenceSymbol == NULL) ReferenceSymbol = GetSymbolByCurrencies(cross_currency, account_currency, NONFOREX_SYMBOLS_ONLY);
+    ReferenceSymbolMode = true; // If found, we've got USD/SEK.
+
+    // Failed.
+    if (ReferenceSymbol == NULL)
+    {
+        // Reversing currencies.
+        ReferenceSymbol = GetSymbolByCurrencies(account_currency, cross_currency, FOREX_SYMBOLS_ONLY);
+        if (ReferenceSymbol == NULL) ReferenceSymbol = GetSymbolByCurrencies(account_currency, cross_currency, NONFOREX_SYMBOLS_ONLY);
+        ReferenceSymbolMode = false; // If found, we've got SEK/USD.
+    }
+    if (ReferenceSymbol == NULL)
+    {
+        Print("Error. Couldn't detect proper currency pair for 2-pair adjustment calculation. Cross currency: ", cross_currency, ". Account currency: ", account_currency, ".");
+        return false;
+    }
+
+    AdditionalReferenceSymbol = GetSymbolByCurrencies(cross_currency, ProfitCurrency, FOREX_SYMBOLS_ONLY); 
+    if (AdditionalReferenceSymbol == NULL) AdditionalReferenceSymbol = GetSymbolByCurrencies(cross_currency, ProfitCurrency, NONFOREX_SYMBOLS_ONLY);
+    AdditionalReferenceSymbolMode = false; // If found, we've got USD/CHF. Notice that mode is swapped for cross/profit compared to cross/acc, because it is used in the opposite way.
+
+    // Failed.
+    if (AdditionalReferenceSymbol == NULL)
+    {
+        // Reversing currencies.
+        AdditionalReferenceSymbol = GetSymbolByCurrencies(ProfitCurrency, cross_currency, FOREX_SYMBOLS_ONLY);
+        if (AdditionalReferenceSymbol == NULL) AdditionalReferenceSymbol = GetSymbolByCurrencies(ProfitCurrency, cross_currency, NONFOREX_SYMBOLS_ONLY);
+        AdditionalReferenceSymbolMode = true; // If found, we've got CHF/USD. Notice that mode is swapped for profit/cross compared to acc/cross, because it is used in the opposite way.
+    }
+    if (AdditionalReferenceSymbol == NULL)
+    {
+        Print("Error. Couldn't detect proper currency pair for 2-pair adjustment calculation. Cross currency: ", cross_currency, ". Chart's pair currency: ", ProfitCurrency, ".");
+        return false;
+    }
+
+    return true;
+}
+
 //+------------------------------------------------------------------+
 //| Get profit correction coefficient based on current prices.       |
 //| Valid for loss calculation only.                                 |
 //+------------------------------------------------------------------+
-double GetCurrencyCorrectionCoefficient(MqlTick &tick)
+double GetCurrencyCorrectionCoefficient(MqlTick &tick, const bool ref_symbol_mode)
 {
     if ((tick.ask == 0) || (tick.bid == 0)) return -1; // Data is not yet ready.
     // Reverse quote.
-    if (ReferenceSymbolMode)
+    if (ref_symbol_mode)
     {
         // Using Buy price for reverse quote.
         return tick.ask;
