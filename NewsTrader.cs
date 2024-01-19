@@ -4,8 +4,8 @@
 //   Can set SL to breakeven when unrealized profit = SL.
 //   Alternatively, adds ATR based trailing stop.
 //   Closes trade after given time period passes.
-//   Version 1.09.
-//   Copyright 2015-2022, EarnForex.com
+//   Version 1.11.
+//   Copyright 2024, EarnForex.com
 //   https://www.earnforex.com/metatrader-expert-advisors/News-Trader/
 // -------------------------------------------------------------------------------
 
@@ -135,10 +135,12 @@ namespace cAlgo
         {
             news_time = new DateTime(Year, Month, Day, Hour, Minute, 0);
             double min_lot = Symbol.VolumeInUnitsToQuantity(Symbol.VolumeInUnitsMin);
-            double lot_step = Symbol.VolumeInUnitsToQuantity(Symbol.VolumeInUnitsStep);
-            Print("Minimum lot: ", min_lot.ToString(), ", lot step: ", lot_step.ToString(), ".");
             if ((Lots < min_lot) && (!MM))
+            {
+                double lot_step = Symbol.VolumeInUnitsToQuantity(Symbol.VolumeInUnitsStep);
                 Print("Lots should not be less than: ", min_lot.ToString(), ".");
+                Print("Minimum lot: ", min_lot.ToString(), ", lot step: ", lot_step.ToString(), ".");
+            }
             else
                 CanTrade = true;
 

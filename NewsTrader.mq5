@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                                   NewsTrader.mq5 |
-//|                             Copyright © 2015-2022, EarnForex.com |
+//|                                  Copyright © 2024, EarnForex.com |
 //|                                       https://www.earnforex.com/ |
 //+------------------------------------------------------------------+
-#property copyright "Copyright © 2015-2022, EarnForex"
+#property copyright "Copyright © 2024, EarnForex"
 #property link      "https://www.earnforex.com/metatrader-expert-advisors/News-Trader/"
-#property version   "1.10"
+#property version   "1.11"
 
 #property description "Opens a buy/sell trade (random, chosen direction, or both directions) seconds before news release."
 #property description "Sets SL and TP. Keeps updating them until the very release."
@@ -67,11 +67,13 @@ input group "Miscellaneous"
 input int Slippage = 3;
 input int Magic = 794823491;
 input string Commentary = "NewsTrader"; // Comment - trade description (e.g. "US CPI", "EU GDP", etc.).
+input bool IgnoreECNMode = true; // IgnoreECNMode: Always attach SL/TP immediately.
 
 // Global variables:
 bool HaveLongPosition, HaveShortPosition;
 bool HaveBuyPending = false, HaveSellPending = false;
 bool ECN_Mode, Hedging_Mode;
+bool BuyOrderAccepted = false, SellOrderAccepted = false;
 
 int news_time;
 bool CanTrade = false;
@@ -93,11 +95,19 @@ CPositionInfo PositionInfo;
 
 void OnInit()
 {
+    HaveBuyPending = false; HaveSellPending = false;
+    BuyOrderAccepted = false; SellOrderAccepted = false;
+    CanTrade = false;
+    Terminal_Trade_Allowed = true;
     news_time = (int)NewsTime;
     double min_lot = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MIN);
-    double lot_step = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_STEP);
-    Print("Minimum lot: ", DoubleToString(min_lot, 2), ", lot step: ", DoubleToString(lot_step, 2), ".");
-    if ((Lots < min_lot) && (!MM)) Alert("Lots should be not less than: ", DoubleToString(min_lot, 2), ".");
+    if ((Lots < min_lot) && (!MM))
+    {
+        double lot_step = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_STEP);
+        int LotStep_digits = CountDecimalPlaces(lot_step);
+        Print("Minimum lot: ", DoubleToString(min_lot, LotStep_digits), ", lot step: ", DoubleToString(lot_step, LotStep_digits), ".");
+        Alert("Lots should be not less than: ", DoubleToString(min_lot, LotStep_digits), ".");
+    }
     else CanTrade = true;
 
     if (ShowTimer)
@@ -141,7 +151,7 @@ void OnTimer()
     ObjectSetInteger(0, "NewsTraderTimer", OBJPROP_FONTSIZE, FontSize);
     ObjectSetString(0, "NewsTraderTimer", OBJPROP_FONT, Font);
     ObjectSetInteger(0, "NewsTraderTimer", OBJPROP_COLOR, FontColor);
-    ChartRedraw(0);
+    ChartRedraw();
 }
 
 //+------------------------------------------------------------------+
@@ -221,6 +231,7 @@ void OnTick()
     ENUM_SYMBOL_TRADE_EXECUTION Execution_Mode = (ENUM_SYMBOL_TRADE_EXECUTION)SymbolInfoInteger(Symbol(), SYMBOL_TRADE_EXEMODE);
     if (Execution_Mode == SYMBOL_TRADE_EXECUTION_MARKET) ECN_Mode = true;
     else ECN_Mode = false;
+    if (IgnoreECNMode) ECN_Mode = false;
 
     ENUM_ACCOUNT_MARGIN_MODE Account_Mode = (ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE);
     if (Account_Mode == ACCOUNT_MARGIN_MODE_RETAIL_HEDGING) Hedging_Mode = true;
@@ -274,26 +285,35 @@ void OnTick()
                     return;
                 }
             }
-            if (Direction == Buy) fBuy();
-            else if (Direction == Sell) fSell();
+            if (Direction == Buy)
+            {
+                if (!BuyOrderAccepted) fBuy();
+            }
+            else if (Direction == Sell)
+            {
+                if (!SellOrderAccepted) fSell();
+            }
             else if (Direction == Both)
             {
                 if (Hedging_Mode)
                 {
-                    fBuy();
-                    fSell();
+                    if (!BuyOrderAccepted) fBuy();
+                    if (!SellOrderAccepted) fSell();
                 }
                 else if ((!HaveBuyPending) || (!HaveSellPending))
                 {
-                    fBuy_Pending();
-                    fSell_Pending();
+                    if (!BuyOrderAccepted) fBuy_Pending();
+                    if (!SellOrderAccepted) fSell_Pending();
                 }
             }
             else if (Direction == Random)
             {
-                MathSrand((uint)TimeCurrent());
-                if (MathRand() % 2 == 1) fBuy();
-                else fSell();
+                if ((!BuyOrderAccepted) && (!SellOrderAccepted))
+                {
+                    MathSrand((uint)TimeCurrent());
+                    if (MathRand() % 2 == 1) fBuy();
+                    else fSell();
+                }
             }
             if (ECN_Mode) ControlPosition();
         }
@@ -502,7 +522,11 @@ void fBuy()
         new_sl = NormalizeDouble(Ask - SL * Point(), Digits());
         new_tp = NormalizeDouble(Ask + TP * Point(), Digits());
     }
-    Trade.PositionOpen(Symbol(), ORDER_TYPE_BUY, lots, Ask, new_sl, new_tp, Commentary);
+    if (!Trade.PositionOpen(Symbol(), ORDER_TYPE_BUY, lots, Ask, new_sl, new_tp, Commentary))
+    {
+        PrintFormat("Unable to open BUY: %s - %d", Trade.ResultRetcodeDescription(), Trade.ResultRetcode());
+    }
+    else BuyOrderAccepted = true;
 }
 
 //+------------------------------------------------------------------+
@@ -519,7 +543,11 @@ void fBuy_Pending()
     new_sl = NormalizeDouble(Ask - SL * Point(), Digits()); // Buy's SL will be at original Buy's SL location.
     new_tp = NormalizeDouble(Ask + TP * Point(), Digits()); // Same with TP.
     double lots = LotsOptimized(ORDER_TYPE_BUY, entry);
-    Trade.OrderOpen(Symbol(), ORDER_TYPE_BUY_STOP, lots, 0, entry, new_sl, new_tp, 0, 0, Commentary);
+    if (!Trade.OrderOpen(Symbol(), ORDER_TYPE_BUY_STOP, lots, 0, entry, new_sl, new_tp, 0, 0, Commentary))
+    {
+        PrintFormat("Unable to open Pending BUY: %s - %d", Trade.ResultRetcodeDescription(), Trade.ResultRetcode());
+    }
+    else BuyOrderAccepted = true;
 }
 
 //+------------------------------------------------------------------+
@@ -537,7 +565,11 @@ void fSell()
         new_sl = NormalizeDouble(Bid + SL * Point(), Digits());
         new_tp = NormalizeDouble(Bid - TP * Point(), Digits());
     }
-    Trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lots, Bid, new_sl, new_tp, Commentary);
+    if (!Trade.PositionOpen(_Symbol, ORDER_TYPE_SELL, lots, Bid, new_sl, new_tp, Commentary))
+    {
+        PrintFormat("Unable to open SELL: %s - %d", Trade.ResultRetcodeDescription(), Trade.ResultRetcode());
+    }
+    else SellOrderAccepted = true;    
 }
 
 //+------------------------------------------------------------------+
@@ -554,7 +586,11 @@ void fSell_Pending()
     new_sl = NormalizeDouble(Bid + SL * Point(), Digits()); // Sell's SL will be at original Sell's SL location.
     new_tp = NormalizeDouble(Bid - TP * Point(), Digits()); // Same with TP.
     double lots = LotsOptimized(ORDER_TYPE_SELL, entry);
-    Trade.OrderOpen(Symbol(), ORDER_TYPE_SELL_STOP, lots, 0, entry, new_sl, new_tp, 0, 0, Commentary);
+    if (!Trade.OrderOpen(Symbol(), ORDER_TYPE_SELL_STOP, lots, 0, entry, new_sl, new_tp, 0, 0, Commentary))
+    {
+        PrintFormat("Unable to open Pending SELL: %s - %d", Trade.ResultRetcodeDescription(), Trade.ResultRetcode());
+    }
+    else SellOrderAccepted = true;
 }
 
 //+------------------------------------------------------------------+

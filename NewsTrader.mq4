@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                                                   NewsTrader.mq4 |
-//|                             Copyright © 2015-2022, EarnForex.com |
+//|                                  Copyright © 2024, EarnForex.com |
 //|                                       https://www.earnforex.com/ |
 //+------------------------------------------------------------------+
-#property copyright "Copyright © 2015-2022, EarnForex"
+#property copyright "Copyright © 2024, EarnForex"
 #property link      "https://www.earnforex.com/metatrader-expert-advisors/News-Trader/"
-#property version   "1.10"
+#property version   "1.11"
 #property strict
 
 #property description "Opens a buy/sell trade (random, chosen direction, or both directions) seconds before news release."
@@ -64,6 +64,7 @@ input group "Miscellaneous"
 input int Slippage = 3;
 input int Magic = 794823491;
 input string Commentary = "NewsTrader"; // Comment - trade description (e.g. "US CPI", "EU GDP", etc.).
+input bool IgnoreECNMode = true; // IgnoreECNMode: Always attach SL/TP immediately.
 
 // Global variables:
 bool HaveLongPosition, HaveShortPosition;
@@ -84,9 +85,13 @@ void OnInit()
 {
     news_time = (int)NewsTime;
     double min_lot = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_MIN);
-    double lot_step = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_STEP);
-    Print("Minimum lot: ", DoubleToString(min_lot, 2), ", lot step: ", DoubleToString(lot_step, 2), ".");
-    if ((Lots < min_lot) && (!MM)) Alert("Lots should be not less than: ", DoubleToString(min_lot, 2), ".");
+    if ((Lots < min_lot) && (!MM))
+    {
+        double lot_step = SymbolInfoDouble(Symbol(), SYMBOL_VOLUME_STEP);
+        int LotStep_digits = CountDecimalPlaces(lot_step);
+        Print("Minimum lot: ", DoubleToString(min_lot, LotStep_digits), ", lot step: ", DoubleToString(lot_step, LotStep_digits), ".");
+        Alert("Lots should be not less than: ", DoubleToString(min_lot, LotStep_digits), ".");
+    }
     else CanTrade = true;
 
     if (ShowTimer)
@@ -201,6 +206,7 @@ void DoTrading()
     ENUM_SYMBOL_TRADE_EXECUTION Execution_Mode = (ENUM_SYMBOL_TRADE_EXECUTION)SymbolInfoInteger(Symbol(), SYMBOL_TRADE_EXEMODE);
     if (Execution_Mode == SYMBOL_TRADE_EXECUTION_MARKET) ECN_Mode = true;
     else ECN_Mode = false;
+    if (IgnoreECNMode) ECN_Mode = false;
 
     // Do nothing if it is too early.
     int time = (int)TimeCurrent();
