@@ -5,13 +5,13 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright © 2024, EarnForex"
 #property link      "https://www.earnforex.com/metatrader-expert-advisors/News-Trader/"
-#property version   "1.11"
+#property version   "1.12"
 #property strict
 
 #property description "Opens a buy/sell trade (random, chosen direction, or both directions) seconds before news release."
 #property description "Sets SL and TP. Keeps updating them until the very release."
-#property description "Can set SL to breakeven when unrealized profit = SL."
-#property description "Alternatively, adds ATR based trailing stop."
+#property description "Can set use trailing stop and breakeven."
+#property description "ATR-based stop-loss option is also available."
 #property description "Closes trade after one hour."
 
 enum dir_enum
@@ -24,47 +24,51 @@ enum dir_enum
 
 enum trailing_enum
 {
+    None,
     Breakeven,
-    Full,
-    None
+    Normal, // Normal trailing stop
+    NormalPlusBE // Normal trailing stop + Breakeven
 };
 
 input group "Trading"
-input datetime NewsTime = __DATE__; // News date/time.
-input int StopLoss = 15; // Stop-loss in broker's pips.
-input int TakeProfit = 75; // Take-profit in broker's pips.
-input dir_enum Direction = Both; // Direction of the trade to open.
-input trailing_enum TrailingStop = None; // Trailing stop type.
-input bool PreAdjustSLTP = false; // Preadjust SL/TP until news is out.
-input int SecondsBefore = 18; // Seconds before the news to open a trade.
-input int CloseAfterSeconds = 3600; // Close trade X seconds after the news, 0 - turn the feature off.
-input bool SpreadFuse = true; // SpreadFuse - prevent trading if spread >= stop-loss.
+input datetime NewsTime = -1; // News date/time (Server)
+input int StopLoss = 15; // Stop-loss in points
+input int TakeProfit = 75; // Take-profit in points
+input dir_enum Direction = Both; // Direction of the trade to open
+input trailing_enum TrailingStop = None; // Trailing stop type
+input int BEOnProfit = 0; // Profit to trigger breakeven, points
+input int BEExtraProfit = 0; // Extra profit for breakeven, points
+input int TSOnProfit = 0; // Profit to start trailing stop, points
+input bool PreAdjustSLTP = false; // Preadjust SL/TP until news is out
+input int SecondsBefore = 18; // Seconds before the news to open a trade
+input int CloseAfterSeconds = 3600; // Close trade X seconds after the news, 0 - turn the feature off
+input bool SpreadFuse = true; // SpreadFuse - prevent trading if spread >= stop-loss
 input group "ATR"
-input bool UseATR = false; // Use ATR-based stop-loss and take-profit levels.
-input int ATR_Period = 14; // ATR Period.
-input double ATR_Multiplier_SL = 1; // ATR multiplier for SL.
-input double ATR_Multiplier_TP = 5; // ATR multiplier for TP.
+input bool UseATR = false; // Use ATR-based stop-loss and take-profit levels
+input int ATR_Period = 14; // ATR Period
+input double ATR_Multiplier_SL = 1; // ATR multiplier for SL
+input double ATR_Multiplier_TP = 5; // ATR multiplier for TP
 input group "Money management"
 input double Lots = 0.01;
-input bool MM  = true; // Money Management, if true - position sizing based on stop-loss.
-input double Risk = 1; // Risk - Risk tolerance in percentage points.
-input double FixedBalance = 0; // FixedBalance: If > 0, trade size calc. uses it as balance.
-input double MoneyRisk = 0; // MoneyRisk: Risk tolerance in account currency.
-input bool UseMoneyInsteadOfPercentage = false; // Use money risk instead of percentage.
-input bool UseEquityInsteadOfBalance = false; // Use equity instead of balance.
+input bool MM  = true; // Money Management, if true - position sizing based on stop-loss
+input double Risk = 1; // Risk - Risk tolerance in percentage points
+input double FixedBalance = 0; // FixedBalance: If > 0, trade size calc. uses it as balance
+input double MoneyRisk = 0; // MoneyRisk: Risk tolerance in account currency
+input bool UseMoneyInsteadOfPercentage = false; // Use money risk instead of percentage
+input bool UseEquityInsteadOfBalance = false; // Use equity instead of balance
 input group "Timer"
-input bool ShowTimer = true; // Show timer before and after news.
+input bool ShowTimer = true; // Show timer before and after news
 input int FontSize = 18;
 input string Font = "Arial";
 input color FontColor = clrRed;
 input ENUM_BASE_CORNER Corner = CORNER_LEFT_UPPER;
-input int X_Distance = 10; // X-axis distance from the chart corner.
-input int Y_Distance = 130; // Y-axis distance from the chart corner.
+input int X_Distance = 10; // X-axis distance from the chart corner
+input int Y_Distance = 130; // Y-axis distance from the chart corner
 input group "Miscellaneous"
 input int Slippage = 3;
 input int Magic = 794823491;
-input string Commentary = "NewsTrader"; // Comment - trade description (e.g. "US CPI", "EU GDP", etc.).
-input bool IgnoreECNMode = true; // IgnoreECNMode: Always attach SL/TP immediately.
+input string Commentary = "NewsTrader"; // Comment - trade description (e.g. "US CPI", "EU GDP", etc.)
+input bool IgnoreECNMode = true; // IgnoreECNMode: Always attach SL/TP immediately
 
 // Global variables:
 bool HaveLongPosition, HaveShortPosition;
@@ -107,6 +111,8 @@ void OnInit()
     // If UseATR = false, these values will be used. Otherwise, ATR values will be calculated later.
     SL = StopLoss;
     TP = TakeProfit;
+    
+    if (BEExtraProfit > BEOnProfit) Print("Extra profit for breakeven shouldn't be greater than the profit to trigger breakeven parameter. Please check your input parameters.");
 }
 
 //+------------------------------------------------------------------+
@@ -317,7 +323,7 @@ void ControlPosition()
                 if ((((new_sl != NormalizeDouble(OrderStopLoss(), Digits)) || (new_tp != NormalizeDouble(OrderTakeProfit(), Digits))) && (PreAdjustSLTP)) ||
                         (((OrderStopLoss() == 0) || (OrderTakeProfit() == 0)) && (ECN_Mode)))
                 {
-                    Print("Adjusting SL: ", new_sl, " and TP: ", new_tp, ".");
+                    Print("Adjusting SL: ", DoubleToString(new_sl, _Digits), " and TP: ", DoubleToString(new_tp, _Digits), ".");
                     for (int i = 0; i < 10; i++)
                     {
                         bool result = OrderModify(OrderTicket(), OrderOpenPrice(), new_sl, new_tp, 0);
@@ -333,7 +339,7 @@ void ControlPosition()
                 // Adjust only if in ECN mode and need to assign SL/TP first time.
                 if (((OrderStopLoss() == 0) || (OrderTakeProfit() == 0)) && (ECN_Mode))
                 {
-                    Print("Adjusting SL: ", new_sl, " and TP: ", new_tp, ".");
+                    Print("Adjusting SL: ", DoubleToString(new_sl, _Digits), " and TP: ", DoubleToString(new_tp, _Digits), ".");
                     for (int i = 0; i < 10; i++)
                     {
                         bool result = OrderModify(OrderTicket(), OrderOpenPrice(), new_sl, new_tp, 0);
@@ -341,30 +347,40 @@ void ControlPosition()
                         else Print("Error modifying the order: ", GetLastError());
                     }
                 }
-                if ((TrailingStop == Breakeven) && ((((OrderType() == OP_BUY) && (Ask - OrderOpenPrice() >= SL * Point)) || ((OrderType() == OP_SELL) && (OrderOpenPrice() - Bid >= SL * Point)))))
+                // Breakeven.
+                if (((TrailingStop == Breakeven) || (TrailingStop == NormalPlusBE)) && ((((OrderType() == OP_BUY) && (Bid - OrderOpenPrice() >= BEOnProfit * _Point)) || ((OrderType() == OP_SELL) && (OrderOpenPrice() - Ask >= BEOnProfit * _Point)))))
                 {
-                    new_sl = NormalizeDouble(OrderOpenPrice(), Digits);
-                    if (new_sl != NormalizeDouble(OrderStopLoss(), Digits))
+                    new_sl = NormalizeDouble(OrderOpenPrice(), _Digits);
+                    if (BEExtraProfit > 0) // Breakeven extra profit?
+                    {
+                        if (OrderType() == OP_BUY) new_sl += BEExtraProfit * _Point; // For buys.
+                        else new_sl -= BEExtraProfit * _Point; // For sells.
+                        new_sl = NormalizeDouble(new_sl, _Digits);
+                    }
+                    if (((OrderType() == OP_BUY) && (new_sl > OrderStopLoss())) || ((OrderType() == OP_SELL) && ((new_sl < OrderStopLoss()) || (OrderStopLoss() == 0)))) // Avoid moving SL to BE if this SL is already there or in a better position.
                     {
                         Print("Moving SL to breakeven: ", new_sl, ".");
                         for (int i = 0; i < 10; i++)
                         {
                             bool result = OrderModify(OrderTicket(), OrderOpenPrice(), new_sl, OrderTakeProfit(), 0);
                             if (result) break;
+                            else Print("Position modification error: ", GetLastError());
                         }
                     }
                 }
-                else if ((TrailingStop == Full) && ((((OrderType() == OP_BUY) && (Ask - OrderStopLoss() >= SL * Point)) || ((OrderType() == OP_SELL) && (OrderStopLoss() - Bid >= SL * Point)))))
+                // Trailing stop.
+                if (((TrailingStop == Normal) || (TrailingStop == NormalPlusBE)) && ((TSOnProfit == 0) || ((OrderType() == OP_BUY) && (Bid - OrderOpenPrice() >= TSOnProfit * _Point)) || ((OrderType() == OP_SELL) && (OrderOpenPrice() - Ask >= TSOnProfit * _Point))))
                 {
-                    if (OrderType() == OP_BUY) new_sl = NormalizeDouble(Ask - SL * Point, Digits);
-                    else if (OrderType() == OP_SELL) new_sl = NormalizeDouble(Bid + SL * Point, Digits);
-                    if (((OrderType() == OP_BUY) && (new_sl > NormalizeDouble(OrderStopLoss(), Digits))) || ((OrderType() == OP_SELL) && (new_sl < NormalizeDouble(OrderStopLoss(), Digits))))
+                    if (OrderType() == OP_BUY) new_sl = NormalizeDouble(Bid - SL * _Point, _Digits);
+                    else if (OrderType() == OP_SELL) new_sl = NormalizeDouble(Ask + SL * _Point, _Digits);
+                    if (((OrderType() == OP_BUY) && (new_sl > OrderStopLoss())) || ((OrderType() == OP_SELL) && ((new_sl < OrderStopLoss()) || (OrderStopLoss() == 0)))) // Avoid moving the SL if this SL is already in a better position.
                     {
                         Print("Moving trailing SL to ", new_sl, ".");
                         for (int i = 0; i < 10; i++)
                         {
                             bool result = OrderModify(OrderTicket(), OrderOpenPrice(), new_sl, OrderTakeProfit(), 0);
                             if (result) break;
+                            else Print("Position modification error: ", GetLastError());
                         }
                     }
                 }

@@ -1,10 +1,10 @@
 // -------------------------------------------------------------------------------
 //   Opens a buy/sell trade (random, chosen direction, or both directions) seconds before news release.
 //   Sets SL and TP. Keeps updating them until the very release.
-//   Can set SL to breakeven when unrealized profit = SL.
-//   Alternatively, adds ATR based trailing stop.
+//   Can set use trailing stop and breakeven.
+//   ATR-based stop-loss option is also available.
 //   Closes trade after given time period passes.
-//   Version 1.11.
+//   Version 1.12.
 //   Copyright 2024, EarnForex.com
 //   https://www.earnforex.com/metatrader-expert-advisors/News-Trader/
 // -------------------------------------------------------------------------------
@@ -15,6 +15,14 @@ using cAlgo.API;
 using cAlgo.API.Indicators;
 using cAlgo.API.Internals;
 using cAlgo.Indicators;
+
+public enum Trailing_Enum
+{
+    None,
+    Breakeven,
+    TrailingStop, // Normal trailing stop
+    TS_plus_BE // Normal trailing stop + Breakeven
+}
 
 namespace cAlgo
 {
@@ -51,12 +59,17 @@ namespace cAlgo
         [Parameter("Randomize Buy/Sell", DefaultValue = false)]
         public bool Rnd { get; set; }
 
-        // Trailing Stop will supersede Breakeven Stop if true.
-        [Parameter("Trailing Stop", DefaultValue = false)]
-        public bool Trailing { get; set; }
+        [Parameter("Trailing Stop", DefaultValue = Trailing_Enum.None)]
+        public Trailing_Enum Trailing { get; set; }
 
-        [Parameter("Breakeven Stop", DefaultValue = false)]
-        public bool Breakeven { get; set; }
+        [Parameter("Profit to trigger breakeven, pips", DefaultValue = 0, MinValue = 0)]
+        public int BEOnProfit { get; set; }
+        
+        [Parameter("Breakeven extra profit, pips", DefaultValue = 0, MinValue = 0)]
+        public int BEExtraProfit { get; set; }
+
+        [Parameter("Profit to start trailing stop, pips", DefaultValue = 0, MinValue = 0)]
+        public int TSOnProfit { get; set; }
 
         [Parameter("Preadjust SL/TP", DefaultValue = false)]
         public bool PreAdjustSLTP { get; set; }
@@ -64,10 +77,10 @@ namespace cAlgo
         [Parameter("Seconds Before News", DefaultValue = 10, MinValue = 1)]
         public int SecondsBefore { get; set; }
 
-        [Parameter("Close After Seconds", DefaultValue = 3600, MinValue = 1)]
+        [Parameter("Close After Seconds", DefaultValue = 3600, MinValue = 0)]
         public int CloseAfterSeconds { get; set; }
 
-        [Parameter("Use ATR Position Sizing", DefaultValue = false)]
+        [Parameter("Use ATR Stop-Loss", DefaultValue = false)]
         public bool UseATR { get; set; }
 
         [Parameter("ATR Period", DefaultValue = 14, MinValue = 1)]
@@ -125,6 +138,9 @@ namespace cAlgo
 
         private bool HaveLongPosition = false;
         private bool HaveShortPosition = false;
+        
+        private bool Breakeven_Needed = false;
+        private bool Trailing_Needed = false;
 
         protected string MyLabel
         {
@@ -159,6 +175,10 @@ namespace cAlgo
             // If UseATR = false, these values will be used. Otherwise, ATR values will be calculated later.
             SL = StopLoss;
             TP = TakeProfit;
+            
+            if (BEExtraProfit > BEOnProfit) Print("Extra profit for breakeven shouldn't be greater than the profit to trigger breakeven parameter. Please check your input parameters.");
+            if ((Trailing == Trailing_Enum.Breakeven) || (Trailing == Trailing_Enum.TS_plus_BE)) Breakeven_Needed = true;
+            if ((Trailing == Trailing_Enum.TrailingStop) || (Trailing == Trailing_Enum.TS_plus_BE)) Trailing_Needed = true;
         }
 
 //+------------------------------------------------------------------+
@@ -219,19 +239,19 @@ namespace cAlgo
                     {
                         Random r = new Random();
                         if (r.Next() % 2 == 1)
-                            fBuy();
+                            OpenBuy();
                         else
-                            fSell();
+                            OpenSell();
                     }
                     else if ((Buy) && (Sell))
                     {
-                        fSell();
-                        fBuy();
+                        OpenSell();
+                        OpenBuy();
                     }
                     else if (Buy)
-                        fBuy();
+                        OpenBuy();
                     else if (Sell)
-                        fSell();
+                        OpenSell();
                 }
             }
         }
@@ -258,7 +278,7 @@ namespace cAlgo
 //+------------------------------------------------------------------+
 //| Generic buy.													 |
 //+------------------------------------------------------------------+
-        private void fBuy()
+        private void OpenBuy()
         {
             ExecuteMarketRangeOrder(TradeType.Buy, Symbol.Name, LotsOptimized(), Slippage, Symbol.Ask, MyLabel, SL, TP, Commentary);
         }
@@ -266,7 +286,7 @@ namespace cAlgo
 //+------------------------------------------------------------------+
 //| Generic sell.													 |
 //+------------------------------------------------------------------+
-        private void fSell()
+        private void OpenSell()
         {
             ExecuteMarketRangeOrder(TradeType.Sell, Symbol.Name, LotsOptimized(), Slippage, Symbol.Bid, MyLabel, SL, TP, Commentary);
         }
@@ -303,23 +323,29 @@ namespace cAlgo
                     // Check for breakeven or trade time out.
                     else
                     {
-                        if ((!Trailing) && (Breakeven) && ((((position.TradeType == TradeType.Buy) && (Symbol.Ask - position.EntryPrice >= SL * Symbol.PipSize)) || ((position.TradeType == TradeType.Sell) && (position.EntryPrice - Symbol.Bid >= SL * Symbol.PipSize)))))
+                        if ((Breakeven_Needed) && ((((position.TradeType == TradeType.Buy) && (Symbol.Bid - position.EntryPrice >= BEOnProfit * Symbol.PipSize)) || ((position.TradeType == TradeType.Sell) && (position.EntryPrice - Symbol.Ask >= BEOnProfit * Symbol.PipSize)))))
                         {
                             double new_sl = Math.Round(position.EntryPrice, Symbol.Digits);
-                            if (new_sl != position.StopLoss)
+                            if (BEExtraProfit > 0) // Breakeven extra profit?
+                            {
+                                if (position.TradeType == TradeType.Buy) new_sl += BEExtraProfit * Symbol.PipSize; // For buys.
+                                else new_sl -= BEExtraProfit * Symbol.PipSize; // For sells.
+                                new_sl = Math.Round(new_sl, Symbol.Digits);
+                            }
+                            if (((position.TradeType == TradeType.Buy) && (new_sl > position.StopLoss)) || ((position.TradeType == TradeType.Sell) && ((new_sl < position.StopLoss) || (position.StopLoss == null)))) // Avoid moving SL to BE if this SL is already there or in a better position.
                             {
                                 Print("Moving SL to breakeven: ", new_sl, ".");
                                 ModifyPosition(position, new_sl, position.TakeProfit);
                             }
                         }
-                        else if ((Trailing) && ((((position.TradeType == TradeType.Buy) && (Symbol.Ask - position.StopLoss >= SL * Symbol.PipSize)) || ((position.TradeType == TradeType.Sell) && (position.StopLoss - Symbol.Bid >= SL * Symbol.PipSize)))))
+                        if ((Trailing_Needed) && ((TSOnProfit == 0) || ((position.TradeType == TradeType.Buy) && (Symbol.Bid - position.EntryPrice >= TSOnProfit * Symbol.PipSize)) || ((position.TradeType == TradeType.Sell) && (position.EntryPrice - Symbol.Ask >= TSOnProfit * Symbol.PipSize))))
                         {
                             double new_sl = 0;
                             if (position.TradeType == TradeType.Buy)
-                                new_sl = Math.Round(Symbol.Ask - SL * Symbol.PipSize, Symbol.Digits);
+                                new_sl = Math.Round(Symbol.Bid - SL * Symbol.PipSize, Symbol.Digits);
                             else if (position.TradeType == TradeType.Sell)
-                                new_sl = Math.Round(Symbol.Bid + SL * Symbol.PipSize, Symbol.Digits);
-                            if (((position.TradeType == TradeType.Buy) && (new_sl > position.StopLoss)) || ((position.TradeType == TradeType.Sell) && (new_sl < position.StopLoss)))
+                                new_sl = Math.Round(Symbol.Ask + SL * Symbol.PipSize, Symbol.Digits);
+                            if (((position.TradeType == TradeType.Buy) && (new_sl > position.StopLoss)) || ((position.TradeType == TradeType.Sell) && ((new_sl < position.StopLoss) || (position.StopLoss == null))))
                             {
                                 Print("Moving trailing SL to ", new_sl, ".");
                                 ModifyPosition(position, new_sl, position.TakeProfit);
